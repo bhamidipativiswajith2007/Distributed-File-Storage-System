@@ -2,27 +2,25 @@
  * @file metadata-service/models/Chunk.js
  * @description Mongoose Schema defining the MongoDB model for chunk metadata mapping.
  * 
- * Concept: Compound Database Indexes & Placement Tracking
- * A file is split into multiple ordered chunks. When downloading, we query MongoDB for all chunks
- * belonging to a `fileId` and sort them by `chunkIndex`.
- * 
- * To make this query lightning-fast, we define a "compound index" on { fileId: 1, chunkIndex: 1 }.
- * 
- * In Phase 2, we introduce the `nodeId` field to record exactly which Storage Node contains each chunk.
+ * Concept: Replicas Storage Array
+ * In Phase 3, we support storing multiple copies of each chunk.
+ * To do this, we replace the single `nodeId` field with a `replicas` array of Strings.
+ * This array contains the nodeIds (e.g. ["node-1", "node-2"]) of every storage node hosting
+ * a physical copy of the chunk.
  */
 
 import mongoose from 'mongoose';
 
 /**
  * Chunk Schema
- * Represents the mapping metadata for an individual slice of a file.
+ * Represents the mapping metadata for an individual slice of a file, tracking all replicas.
  * 
  * Fields:
- * - chunkId: The unique UUID of the chunk file saved on the designated Storage Node.
+ * - chunkId: The unique UUID of the chunk file saved on the designated Storage Nodes.
  * - fileId: Reference to the parent File's unique UUID.
  * - chunkIndex: The position of this chunk in the file (0-indexed). Used for reassembly.
  * - checksum: The SHA-256 hash of the chunk's binary data (used to verify file integrity on download).
- * - nodeId: The ID of the storage node (e.g. "node-1") where this chunk is physically stored.
+ * - replicas: Array of nodeIds (e.g. ["node-1", "node-2"]) representing all nodes storing a copy of the chunk.
  */
 const ChunkSchema = new mongoose.Schema(
   {
@@ -45,9 +43,14 @@ const ChunkSchema = new mongoose.Schema(
       type: String,
       required: true
     },
-    nodeId: {
-      type: String,
-      required: true
+    replicas: {
+      type: [String],
+      required: true,
+      // Ensure the array contains at least one node location mapping
+      validate: {
+        validator: (array) => Array.isArray(array) && array.length > 0,
+        message: 'A chunk must be mapped to at least one replica node.'
+      }
     }
   },
   {
@@ -55,8 +58,7 @@ const ChunkSchema = new mongoose.Schema(
   }
 );
 
-// Compound index: Optimizes the frequent query Chunk.find({ fileId }).sort({ chunkIndex: 1 })
-// The index stores the data pre-sorted by fileId and then by chunkIndex.
+// Compound index: Optimizes the query Chunk.find({ fileId }).sort({ chunkIndex: 1 })
 ChunkSchema.index({ fileId: 1, chunkIndex: 1 });
 
 export const Chunk = mongoose.model('Chunk', ChunkSchema);
