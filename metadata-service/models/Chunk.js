@@ -2,13 +2,13 @@
  * @file metadata-service/models/Chunk.js
  * @description Mongoose Schema defining the MongoDB model for chunk metadata mapping.
  * 
- * Concept: Compound Database Indexes
+ * Concept: Compound Database Indexes & Placement Tracking
  * A file is split into multiple ordered chunks. When downloading, we query MongoDB for all chunks
  * belonging to a `fileId` and sort them by `chunkIndex`.
  * 
  * To make this query lightning-fast, we define a "compound index" on { fileId: 1, chunkIndex: 1 }.
- * Instead of scanning the entire collection (table scan), MongoDB uses a pre-sorted tree-like index structure.
- * This guarantees sorting and retrieval happen in O(log N) time rather than O(N).
+ * 
+ * In Phase 2, we introduce the `nodeId` field to record exactly which Storage Node contains each chunk.
  */
 
 import mongoose from 'mongoose';
@@ -18,10 +18,11 @@ import mongoose from 'mongoose';
  * Represents the mapping metadata for an individual slice of a file.
  * 
  * Fields:
- * - chunkId: The unique UUID of the chunk file saved on the Storage Node.
+ * - chunkId: The unique UUID of the chunk file saved on the designated Storage Node.
  * - fileId: Reference to the parent File's unique UUID.
  * - chunkIndex: The position of this chunk in the file (0-indexed). Used for reassembly.
  * - checksum: The SHA-256 hash of the chunk's binary data (used to verify file integrity on download).
+ * - nodeId: The ID of the storage node (e.g. "node-1") where this chunk is physically stored.
  */
 const ChunkSchema = new mongoose.Schema(
   {
@@ -41,6 +42,10 @@ const ChunkSchema = new mongoose.Schema(
       required: true
     },
     checksum: {
+      type: String,
+      required: true
+    },
+    nodeId: {
       type: String,
       required: true
     }
