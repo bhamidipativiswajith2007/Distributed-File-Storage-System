@@ -22,7 +22,7 @@ import { config } from '../config/index.js';
  *   1. Check if the error was thrown by Multer due to file size limits.
  *   2. Check if the error is generic Multer parsing errors.
  *   3. Fall back to standard server status codes (500 or custom code).
- *   4. Return a structured JSON message containing the error details.
+ *   4. Return a structured JSON message containing the error details
  */
 export const errorHandler = (error, request, response, next) => {
   // Log the complete stack trace to the console for backend debugging
