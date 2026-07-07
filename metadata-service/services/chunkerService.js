@@ -1,51 +1,48 @@
 /**
  * @file metadata-service/services/chunkerService.js
- * @description Service responsible for splitting temporary files into chunks and uploading them.
+ * @description Service responsible for splitting temporary files into chunks and distributing them.
  * 
  * Concepts Used:
- * - File Descriptors: Instead of loading a large file into memory, we use `fs.promises.open` to get a file descriptor.
- *   This is a reference handle that allows us to read segments of the file directly from disk.
- * - Why UUID: Generating a UUID (Universally Unique Identifier) ensures every single chunk across the system 
- *   has a globally unique filename. This prevents file overwrites and name collisions on the Storage Node.
- * - Rollback on Failure (Cleanup): If we successfully upload 10 chunks, and chunk 11 fails (due to a network dropout 
- *   or storage error), we must not leave the first 10 chunks orphaned on the Storage Node. We clean them up 
- *   immediately (delete them) to avoid consuming space for a file that can never be reassembled.
+ * - Round Robin Distribution Integration: Coordinates with `nodeSelectionService` to determine the 
+ *   placement of each chunk. The selected nodeId is stored inside the chunk tracker array.
+ * - Multi-Node Rollback: If an upload fails mid-way, the rollback logic deletes uploaded chunks 
+ *   from their respective storage nodes using their correct dynamic URLs.
  */
 
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { calculateChecksum } from '../utils/hash.js';
 import { storageNodeService } from './storageNodeService.js';
+import { nodeSelectionService } from './nodeSelectionService.js';
+import { storageNodes } from '../config/storageNodes.js';
 import { config } from '../config/index.js';
 
 export const chunkerService = {
   /**
-   * Purpose: Read a file sequentially in fixed-size blocks, calculate hash, upload to Storage Node, and rollback on error.
+   * Purpose: Split a file, select placement node cyclically, upload to designated storage node, and roll back on failure.
    * Input:
    *   - filePath: Absolute path to the temporary file on disk.
    * Output: Object containing:
    *   - fileSize: Total file size in bytes.
    *   - totalChunks: Total number of chunks uploaded.
-   *   - chunks: Array of metadata objects for each uploaded chunk ({ chunkId, chunkIndex, checksum }).
+   *   - chunks: Array of metadata objects ({ chunkId, chunkIndex, checksum, nodeId }).
    * High-Level Workflow:
-   *   1. Get the file size using stat. Reject empty files.
-   *   2. Open the file descriptor for reading.
-   *   3. Loop through the file, reading exactly CHUNK_SIZE bytes (or the remaining bytes for the last chunk).
-   *   4. Generate a UUID chunkId and calculate its SHA-256 checksum.
-   *   5. Upload the chunk buffer to the Storage Node via PUT.
-   *   6. Track the uploaded chunk. If an error occurs, delete all uploaded chunks and throw the error.
-   *   7. Close the file descriptor.
+   *   1. Determine size. Open file descriptor.
+   *   2. Loop through file. Allocate buffer. Read segment.
+   *   3. Call nodeSelectionService to get target storage node for current chunkIndex.
+   *   4. Generate UUID and checksum.
+   *   5. Call storageNodeService.uploadChunk with target node URL.
+   *   6. Keep track of uploaded chunk (mapping to nodeId).
+   *   7. Close file descriptor. If any error occurs, loop through tracker and delete chunks from respective nodes.
    */
   splitAndUpload: async (filePath) => {
     const fileStats = await fs.promises.stat(filePath);
     const fileSize = fileStats.size;
 
-    // Guard clause to reject invalid empty files
     if (fileSize === 0) {
       throw new Error('Cannot upload an empty file.');
     }
 
-    // Open file descriptor for sequential reading
     const fileDescriptor = await fs.promises.open(filePath, 'r');
     const uploadedChunksTracker = [];
     
@@ -55,56 +52,57 @@ export const chunkerService = {
     try {
       while (bytePosition < fileSize) {
         const remainingBytes = fileSize - bytePosition;
-        // Determine size: Use standard CHUNK_SIZE, or if we are at the end, use the remaining bytes.
         const currentChunkSize = Math.min(config.CHUNK_SIZE, remainingBytes);
-        
-        // Allocate a buffer to hold this specific chunk's data in RAM
         const chunkBuffer = Buffer.alloc(currentChunkSize);
 
-        // Read bytes directly from the file descriptor at the current byte position
         const { bytesRead } = await fileDescriptor.read(chunkBuffer, 0, currentChunkSize, bytePosition);
         if (bytesRead === 0) {
-          break; // End of file reached
+          break;
         }
 
-        // If we read fewer bytes than allocated (e.g. file changed), slice the buffer to match the actual size
         const finalChunkBuffer = bytesRead === currentChunkSize ? chunkBuffer : chunkBuffer.subarray(0, bytesRead);
 
-        // Generate identifiers and integrity verification checksums
+        // 1. Determine the storage node using Round Robin selection
+        const targetNode = nodeSelectionService.getNodeForChunk(chunkIndex);
+        
+        // 2. Generate UUID and compute SHA-256 hash
         const chunkId = uuidv4();
         const checksum = calculateChecksum(finalChunkBuffer);
 
-        console.log(`[ChunkerService] Uploading chunk ${chunkIndex} (ID: ${chunkId}, Size: ${bytesRead} bytes)`);
+        console.log(`[ChunkerService] Routing chunk ${chunkIndex} to ${targetNode.id} (${targetNode.url}) - ID: ${chunkId}`);
 
-        // Stream the chunk buffer to the storage node
-        await storageNodeService.uploadChunk(chunkId, finalChunkBuffer);
+        // 3. Upload the chunk buffer to the dynamically selected storage node url
+        await storageNodeService.uploadChunk(targetNode.url, chunkId, finalChunkBuffer);
 
-        // Keep track of successful uploads so we can roll them back if a later chunk fails
+        // 4. Save metadata tracker details, mapping chunk to nodeId
         uploadedChunksTracker.push({
           chunkId,
           chunkIndex,
-          checksum
+          checksum,
+          nodeId: targetNode.id
         });
 
-        // Advance progress trackers
         bytePosition += bytesRead;
         chunkIndex++;
       }
     } catch (error) {
-      console.error('[ChunkerService] Upload aborted due to error. Initiating cleanup...');
+      console.error('[ChunkerService] Upload aborted due to error. Initiating cluster rollback...');
       
-      // Rollback logic: Clean up already uploaded chunks to prevent orphan leaks on the storage node
+      // Rollback: delete already uploaded chunks from their respective storage nodes
       for (const uploadedChunk of uploadedChunksTracker) {
         try {
-          await storageNodeService.deleteChunk(uploadedChunk.chunkId);
+          // Find the URL of the node where this chunk was uploaded
+          const nodeConfig = storageNodes.find(node => node.id === uploadedChunk.nodeId);
+          if (nodeConfig) {
+            console.log(`[ChunkerService] Rollback: Deleting chunk ${uploadedChunk.chunkId} from ${nodeConfig.id}`);
+            await storageNodeService.deleteChunk(nodeConfig.url, uploadedChunk.chunkId);
+          }
         } catch (cleanupError) {
-          console.error(`[ChunkerService] Failed to clean up chunk ${uploadedChunk.chunkId}:`, cleanupError.message);
+          console.error(`[ChunkerService] Failed to clean up chunk ${uploadedChunk.chunkId} from nodeId ${uploadedChunk.nodeId}:`, cleanupError.message);
         }
       }
-      // Re-throw the original error to be handled by the controller
       throw error;
     } finally {
-      // Ensure the file descriptor is closed to prevent system file handle leaks
       await fileDescriptor.close();
     }
 
