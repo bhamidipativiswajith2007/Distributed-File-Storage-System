@@ -3,13 +3,12 @@
  * @description Core service orchestrating file operations, database transactions, and data assembly.
  * 
  * Concepts Used:
- * - Chunk Sorting: Databases do not guarantee the insertion order of records when queried. If we download 
- *   chunks out of order, the reassembled file will be corrupt (e.g. an image will be scrambled). We must 
- *   explicitly sort the chunks by `chunkIndex` in ascending order before downloading.
- * - Ordered Deletions: If we delete MongoDB metadata first, and then the Storage Node deletes fail, 
- *   we lose all records of the chunk files. The chunk files become permanent orphans. By deleting the 
- *   chunks from the Storage Node first, we ensure that if any chunk deletion fails, the process stops, 
- *   leaving the database record in place so we can retry.
+ * - Dynamic Node Resolution: When downloading or deleting, the service queries the database to find 
+ *   the assigned `nodeId` for each chunk. It then resolves the ID to the node's configured URL by looking 
+ *   it up in the `storageNodes` array.
+ * - Compound Query Sorting: Explicitly sorts chunks by `chunkIndex` to guarantee file order is preserved.
+ * - Transactional Deletion Flow: Deletes files from their correct individual storage nodes first, 
+ *   and deletes MongoDB metadata records only after all storage node unlinks succeed.
  */
 
 import fs from 'fs';
@@ -18,30 +17,31 @@ import { File } from '../models/File.js';
 import { Chunk } from '../models/Chunk.js';
 import { chunkerService } from './chunkerService.js';
 import { storageNodeService } from './storageNodeService.js';
+import { storageNodes } from '../config/storageNodes.js';
 import { calculateChecksum } from '../utils/hash.js';
 
 export const fileService = {
   /**
-   * Purpose: Chunk an uploaded temporary file, store chunk mappings, and save file metadata.
+   * Purpose: Chunk an uploaded temporary file, map chunks to respective storage nodeIds, and save metadata.
    * Input:
    *   - tempFilePath: Absolute path to the temporary file created by Multer.
    *   - originalName: Original uploaded filename.
    * Output: The newly generated fileId.
    * High-Level Workflow:
-   *   1. Split and upload the temporary file to the Storage Node.
+   *   1. Split and upload file chunks to designated Round Robin storage nodes.
    *   2. Create and save a new File document in MongoDB.
-   *   3. Save Chunk document mapping records in bulk (using insertMany).
-   *   4. Delete the temporary file from local disk.
+   *   3. Save Chunk document mapping records (including nodeId) in bulk.
+   *   4. Delete the temporary upload file from local disk.
    */
   uploadFile: async (tempFilePath, originalName) => {
     let uploadResults;
     const fileId = uuidv4();
 
     try {
-      // 1. Chunk and upload the file to the Storage Node
+      // 1. Chunker handles split, selection, and multi-node uploads
       uploadResults = await chunkerService.splitAndUpload(tempFilePath);
 
-      // 2. Save parent file metadata
+      // 2. Save parent file metadata record
       const fileMetadata = new File({
         fileId,
         fileName: originalName,
@@ -50,12 +50,13 @@ export const fileService = {
       });
       await fileMetadata.save();
 
-      // 3. Save chunk mappings in bulk
+      // 3. Save chunk mappings in bulk, storing nodeId for each chunk
       const chunkRecords = uploadResults.chunks.map((chunk) => ({
         chunkId: chunk.chunkId,
         fileId: fileId,
         chunkIndex: chunk.chunkIndex,
-        checksum: chunk.checksum
+        checksum: chunk.checksum,
+        nodeId: chunk.nodeId // Saved in MongoDB to trace placement
       }));
       await Chunk.insertMany(chunkRecords);
 
@@ -64,7 +65,7 @@ export const fileService = {
       console.error(`[FileService] Upload failed for ${originalName}:`, error.message);
       throw error;
     } finally {
-      // Always delete the temporary file from the metadata-service disk to prevent disk space leaks
+      // Always clear the temporary upload file to prevent server disk space leak
       try {
         if (fs.existsSync(tempFilePath)) {
           await fs.promises.unlink(tempFilePath);
@@ -77,18 +78,20 @@ export const fileService = {
   },
 
   /**
-   * Purpose: Retrieve chunks for a file, verify integrity on-the-fly, and write them sequentially to the response socket.
+   * Purpose: Retrieve chunks for a file, connect to their individual node URLs, verify hashes on-the-fly, and stream bytes.
    * Input:
    *   - fileId: Unique UUID of the file.
    *   - expressResponse: Express response object.
-   * Output: Streams binary data to response, finishes by ending the stream.
+   * Output: Streams binary data to response socket.
    * High-Level Workflow:
-   *   1. Fetch the file metadata. Return 404 if missing.
-   *   2. Query and explicitly sort the file's chunks by chunkIndex.
-   *   3. Set Content-Disposition, Content-Length, and Content-Type response headers.
-   *   4. Sequentially download each chunk.
-   *   5. Calculate and verify each chunk's SHA-256 checksum against the database.
-   *   6. Write the chunk data directly to the Express response socket.
+   *   1. Fetch the file metadata.
+   *   2. Query and sort chunks by chunkIndex in ascending order.
+   *   3. Set HTTP download attachment headers.
+   *   4. For each chunk:
+   *      - Resolve its nodeId to the active URL configuration.
+   *      - Download chunk binary buffer from that target node URL.
+   *      - Validate SHA-256 integrity hash.
+   *      - Stream the chunk buffer to the response socket.
    */
   downloadFile: async (fileId, expressResponse) => {
     const fileMetadata = await File.findOne({ fileId });
@@ -98,7 +101,7 @@ export const fileService = {
       throw error;
     }
 
-    // Retrieve chunks sorted by index (crucial for maintaining file assembly order)
+    // Retrieve chunks sorted by index (crucial for reassembly order)
     const fileChunks = await Chunk.find({ fileId }).sort({ chunkIndex: 1 });
     
     if (!fileChunks || fileChunks.length !== fileMetadata.totalChunks) {
@@ -112,11 +115,18 @@ export const fileService = {
     expressResponse.setHeader('Content-Length', fileMetadata.fileSize);
     expressResponse.setHeader('Content-Type', 'application/octet-stream');
 
-    // Sequentially download, verify, and write each chunk
+    // Sequentially download from their correct storage nodes, verify, and write each chunk
     for (const chunkMetadata of fileChunks) {
-      console.log(`[FileService] Fetching chunk ${chunkMetadata.chunkIndex} (ID: ${chunkMetadata.chunkId})`);
+      // Resolve nodeId to its corresponding storage node URL
+      const targetNode = storageNodes.find(node => node.id === chunkMetadata.nodeId);
+      if (!targetNode) {
+        throw new Error(`Storage configuration missing for node: ${chunkMetadata.nodeId}`);
+      }
+
+      console.log(`[FileService] Fetching chunk ${chunkMetadata.chunkIndex} from ${targetNode.id} (${targetNode.url})`);
       
-      const chunkBuffer = await storageNodeService.downloadChunk(chunkMetadata.chunkId);
+      // Download chunk bytes from the dynamically resolved node URL
+      const chunkBuffer = await storageNodeService.downloadChunk(targetNode.url, chunkMetadata.chunkId);
 
       // Verify SHA-256 integrity checksum
       const computedChecksum = calculateChecksum(chunkBuffer);
@@ -126,23 +136,25 @@ export const fileService = {
         throw integrityError;
       }
 
-      // Write chunk buffer to response socket stream
+      // Stream chunk buffer to response socket
       expressResponse.write(chunkBuffer);
     }
 
-    // Finalize/close the response connection
+    // Finish the response stream
     expressResponse.end();
   },
 
   /**
-   * Purpose: Delete a file's chunk files on the Storage Node first, and then delete database records on success.
+   * Purpose: Delete a file's chunk files from their respective storage nodes, and then delete database records.
    * Input:
    *   - fileId: Unique UUID of the file.
    * Output: Resolves on success, throws an error if any deletion step fails.
    * High-Level Workflow:
-   *   1. Verify file exists in database.
+   *   1. Verify file exists.
    *   2. Query all chunks.
-   *   3. Request chunk deletions from the Storage Node. If one fails, stop.
+   *   3. For each chunk:
+   *      - Resolve its nodeId to its configured URL.
+   *      - Delete chunk file from that target node URL.
    *   4. Delete the Chunk and File documents from MongoDB.
    */
   deleteFile: async (fileId) => {
@@ -156,11 +168,18 @@ export const fileService = {
     // Load chunk metadata records
     const fileChunks = await Chunk.find({ fileId });
 
-    // Step 1: Delete files from physical storage node first
+    // Step 1: Delete files from their respective storage nodes first
     for (const chunkMetadata of fileChunks) {
-      console.log(`[FileService] Requesting deletion of chunk ${chunkMetadata.chunkId} from storage node`);
-      // If a deletion fails, this throws and halts the execution, leaving DB records intact.
-      await storageNodeService.deleteChunk(chunkMetadata.chunkId);
+      // Resolve nodeId to its corresponding storage node URL
+      const targetNode = storageNodes.find(node => node.id === chunkMetadata.nodeId);
+      if (!targetNode) {
+        throw new Error(`Storage configuration missing for node: ${chunkMetadata.nodeId}`);
+      }
+
+      console.log(`[FileService] Requesting deletion of chunk ${chunkMetadata.chunkId} from ${targetNode.id} (${targetNode.url})`);
+      
+      // Delete the chunk from the resolved storage node URL
+      await storageNodeService.deleteChunk(targetNode.url, chunkMetadata.chunkId);
     }
 
     // Step 2: Delete database records only after successful physical storage deletion

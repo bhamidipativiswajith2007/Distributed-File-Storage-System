@@ -6,9 +6,10 @@
  * The Storage Node operates independently from the Metadata Service. It has its own config file
  * to load values like its active port and where it stores the binary chunk files on disk.
  * 
- * Node.js & ES Modules Concepts Used:
- * - `import.meta.url` & `fileURLToPath`: Reconstructs the absolute directory path (`__dirname`) in ES Modules.
- * - `dotenv.config`: Loads environmental configurations from `storage-node/.env`.
+ * Concept: Port-partitioned Storage Directories
+ * To run multiple instances of the storage node from the same codebase without them overwriting
+ * or mixing each other's files, we automatically append the node's PORT to the storage directory.
+ * E.g., Node 1 (port 5001) stores chunks in data/chunks/5001/, while Node 2 (port 5002) stores in data/chunks/5002/.
  */
 
 import dotenv from 'dotenv';
@@ -22,11 +23,11 @@ const __dirname = path.dirname(__filename);
 // Load env variables relative to the storage-node root directory
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
+const activePort = parseInt(process.env.PORT, 10) || 5001;
+
 export const config = {
-  // Port on which this storage node runs (defaults to 5001).
-  PORT: parseInt(process.env.PORT, 10) || 5001,
+  PORT: activePort,
   
-  // The absolute path to the directory where chunk binary files (.bin) are saved.
-  // We resolve it to storage-node/data/chunks.
-  CHUNKS_DIR: path.resolve(__dirname, '../data/chunks')
+  // Storage directory partitioned by port to keep nodes isolated
+  CHUNKS_DIR: path.resolve(__dirname, `../data/chunks/${activePort}`)
 };
