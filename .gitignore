@@ -1,0 +1,13 @@
+node_modules
+# Temporary uploaded files
+metadata-service/temp/uploads/*
+!metadata-service/temp/uploads/.gitkeep
+
+.env
+
+storage-node/data/chunks/*
+!storage-node/data/chunks/.gitkeep
+
+Thumbs.db
+.vscode/
+*.log

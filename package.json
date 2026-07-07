@@ -1,0 +1,20 @@
+{
+  "name": "distributed-storage-root",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "workspaces": [
+    "metadata-service",
+    "storage-node"
+  ],
+  "scripts": {
+    "start:metadata": "npm run start --workspace=metadata-service",
+    "start:storage": "npm run start --workspace=storage-node",
+    "dev:metadata": "npm run dev --workspace=metadata-service",
+    "dev:storage": "npm run dev --workspace=storage-node",
+    "dev": "concurrently \"npm run dev:metadata\" \"npm run dev:storage\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
