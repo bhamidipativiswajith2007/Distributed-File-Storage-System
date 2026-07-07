@@ -11,6 +11,8 @@
  * a unique, fixed-length 64-character hexadecimal signature (hash). Even if a single bit of the 
  * chunk changes, the resulting hash will be completely different. By storing this hash during upload 
  * and recalculating it during download, we verify the absolute integrity of our data.
+ * that is, we can detect if a chunk has been corrupted or tampered with.
+ * if a chunk fails its checksum validation during download, we can immediately terminate the connection to prevent the client from saving corrupted data.
  */
 
 import crypto from 'crypto';
