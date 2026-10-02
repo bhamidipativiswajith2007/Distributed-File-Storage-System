@@ -33,7 +33,7 @@ export const fileService = {
    *   3. Save Chunk document mapping records (including replicas array) in bulk.
    *   4. Delete the temporary upload file from local disk.
    */
-  uploadFile: async (tempFilePath, originalName) => {
+  uploadFile: async (tempFilePath, originalName, ownerId) => {
     let uploadResults;
     const fileId = uuidv4();
 
@@ -41,12 +41,13 @@ export const fileService = {
       // 1. Chunker handles split, replica selection, and concurrent/sequential uploads
       uploadResults = await chunkerService.splitAndUpload(tempFilePath);
 
-      // 2. Save parent file metadata record
+      // 2. Save parent file metadata record with ownerId
       const fileMetadata = new File({
         fileId,
         fileName: originalName,
         fileSize: uploadResults.fileSize,
-        totalChunks: uploadResults.totalChunks
+        totalChunks: uploadResults.totalChunks,
+        ownerId
       });
       await fileMetadata.save();
 
@@ -56,7 +57,7 @@ export const fileService = {
         fileId: fileId,
         chunkIndex: chunk.chunkIndex,
         checksum: chunk.checksum,
-        replicas: chunk.replicas // Saved in MongoDB to record placement locations
+        replicas: chunk.replicas
       }));
       await Chunk.insertMany(chunkRecords);
 
@@ -65,7 +66,6 @@ export const fileService = {
       console.error(`[FileService] Upload failed for ${originalName}:`, error.message);
       throw error;
     } finally {
-      // Always clear the temporary upload file to prevent server disk space leak
       try {
         if (fs.existsSync(tempFilePath)) {
           await fs.promises.unlink(tempFilePath);
@@ -77,27 +77,10 @@ export const fileService = {
     }
   },
 
-  /**
-   * Purpose: Retrieve chunks for a file, connect to the primary replica node, verify hashes, and stream bytes.
-   * Input:
-   *   - fileId: Unique UUID of the file.
-   *   - expressResponse: Express response object.
-   * Output: Streams binary data to response socket.
-   * High-Level Workflow:
-   *   1. Fetch the file metadata.
-   *   2. Query and sort chunks by chunkIndex in ascending order.
-   *   3. Set HTTP download attachment headers.
-   *   4. For each chunk:
-   *      - Access the replicas array. Select the first node ID (index 0) as the source node.
-   *      - Resolve node ID to the active URL configuration.
-   *      - Download chunk binary buffer from that target node URL.
-   *      - Validate SHA-256 integrity hash.
-   *      - Stream the chunk buffer to the response socket.
-   */
-  downloadFile: async (fileId, expressResponse) => {
-    const fileMetadata = await File.findOne({ fileId });
+  downloadFile: async (fileId, ownerId, expressResponse) => {
+    const fileMetadata = await File.findOne({ fileId, ownerId });
     if (!fileMetadata) {
-      const error = new Error('File not found');
+      const error = new Error('File not found or you do not have permission to access it');
       error.statusCode = 404;
       throw error;
     }
@@ -118,14 +101,12 @@ export const fileService = {
 
     // Sequentially download from their primary replica, verify, and write each chunk
     for (const chunkMetadata of fileChunks) {
-      // Phase 3: Assume every node is healthy and always download from the first replica (index 0)
       if (!chunkMetadata.replicas || chunkMetadata.replicas.length === 0) {
         throw new Error(`No replica node registered for chunk index ${chunkMetadata.chunkIndex}`);
       }
       
       const primaryNodeId = chunkMetadata.replicas[0];
       
-      // Resolve nodeId to its corresponding storage node URL
       const targetNode = storageNodes.find(node => node.id === primaryNodeId);
       if (!targetNode) {
         throw new Error(`Storage configuration missing for node: ${primaryNodeId}`);
@@ -133,10 +114,8 @@ export const fileService = {
 
       console.log(`[FileService] Fetching chunk ${chunkMetadata.chunkIndex} from primary replica: ${targetNode.id} (${targetNode.url})`);
       
-      // Download chunk bytes from the resolved node URL
       const chunkBuffer = await storageNodeService.downloadChunk(targetNode.url, chunkMetadata.chunkId);
 
-      // Verify SHA-256 integrity checksum
       const computedChecksum = calculateChecksum(chunkBuffer);
       if (computedChecksum !== chunkMetadata.checksum) {
         const integrityError = new Error(`Integrity check failed for chunk index ${chunkMetadata.chunkIndex}`);
@@ -144,43 +123,24 @@ export const fileService = {
         throw integrityError;
       }
 
-      // Stream chunk buffer to response socket
       expressResponse.write(chunkBuffer);
     }
 
-    // Finish the response stream
     expressResponse.end();
   },
 
-  /**
-   * Purpose: Delete a file's chunk files from all of their replica nodes, and then delete database records.
-   * Input:
-   *   - fileId: Unique UUID of the file.
-   * Output: Resolves on success, throws an error if any deletion step fails.
-   * High-Level Workflow:
-   *   1. Verify file exists.
-   *   2. Query all chunks.
-   *   3. For each chunk:
-   *      - Loop through its replicas array.
-   *      - Resolve each nodeId to its configured URL.
-   *      - Delete chunk file from that target node URL.
-   *   4. Delete the Chunk and File documents from MongoDB.
-   */
-  deleteFile: async (fileId) => {
-    const fileMetadata = await File.findOne({ fileId });
+  deleteFile: async (fileId, ownerId) => {
+    const fileMetadata = await File.findOne({ fileId, ownerId });
     if (!fileMetadata) {
-      const error = new Error('File not found');
+      const error = new Error('File not found or you do not have permission to delete it');
       error.statusCode = 404;
       throw error;
     }
 
-    // Load chunk metadata records
     const fileChunks = await Chunk.find({ fileId });
 
-    // Step 1: Delete all copies of all chunks from their respective storage nodes
     for (const chunkMetadata of fileChunks) {
       for (const nodeId of chunkMetadata.replicas) {
-        // Resolve nodeId to its corresponding storage node URL
         const targetNode = storageNodes.find(node => node.id === nodeId);
         if (!targetNode) {
           throw new Error(`Storage configuration missing for node: ${nodeId}`);
@@ -188,23 +148,17 @@ export const fileService = {
 
         console.log(`[FileService] Deleting chunk replica ${chunkMetadata.chunkId} from ${targetNode.id} (${targetNode.url})`);
         
-        // Delete the chunk replica file from the resolved storage node URL
         await storageNodeService.deleteChunk(targetNode.url, chunkMetadata.chunkId);
       }
     }
 
-    // Step 2: Delete database records only after successful physical storage deletion
     await Chunk.deleteMany({ fileId });
     await File.deleteOne({ fileId });
     
     console.log(`[FileService] Successfully deleted file ${fileId} and all of its chunk replica metadata`);
   },
 
-  /**
-   * Purpose: Fetch a list of all uploaded files in the system, sorted by creation date.
-   * Output: Array of file metadata objects.
-   */
-  listFiles: async () => {
-    return File.find({}, { _id: 0 }).sort({ createdAt: -1 });
+  listFiles: async (ownerId) => {
+    return File.find({ ownerId }, { _id: 0, ownerId: 0 }).sort({ createdAt: -1 });
   }
 };

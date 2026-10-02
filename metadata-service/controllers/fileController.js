@@ -28,10 +28,11 @@ export const uploadFile = async (request, response, next) => {
       });
     }
 
-    console.log(`[FileController] Received file: ${request.file.originalname} (Size: ${request.file.size} bytes)`);
+    const userId = request.user.userId;
+    console.log(`[FileController] Received file: ${request.file.originalname} from User: ${userId}`);
 
-    // Delegate chunking and database persistence to the file service
-    const fileId = await fileService.uploadFile(request.file.path, request.file.originalname);
+    // Delegate chunking and database persistence to the file service, passing the userId
+    const fileId = await fileService.uploadFile(request.file.path, request.file.originalname, userId);
 
     return response.status(201).json({
       success: true,
@@ -42,40 +43,26 @@ export const uploadFile = async (request, response, next) => {
   }
 };
 
-/**
- * Purpose: Stream file chunks back to client with checksum validation.
- * Input:
- *   - request: Express request containing fileId in URL parameters (GET /files/:fileId/download).
- *   - response: Express response stream.
- *   - next: Callback to error middleware.
- */
 export const downloadFile = async (request, response, next) => {
   try {
     const { fileId } = request.params;
-    await fileService.downloadFile(fileId, response);
+    const userId = request.user.userId;
+    await fileService.downloadFile(fileId, userId, response);
   } catch (error) {
-    // If headers have already been sent to the client, we cannot modify the HTTP status code
     if (response.headersSent) {
       console.error(`[FileController] Error during active download stream: ${error.message}`);
-      // Destroy the client connection socket to abort the download and prevent sending corrupted data
       response.destroy();
     } else {
-      next(error); // Send to global error middleware for a clean 500 JSON response
+      next(error);
     }
   }
 };
 
-/**
- * Purpose: Delete a file and its chunks from the system.
- * Input:
- *   - request: Express request containing fileId in URL parameters (DELETE /files/:fileId).
- *   - response: Express response.
- *   - next: Callback to error middleware.
- */
 export const deleteFile = async (request, response, next) => {
   try {
     const { fileId } = request.params;
-    await fileService.deleteFile(fileId);
+    const userId = request.user.userId;
+    await fileService.deleteFile(fileId, userId);
     
     return response.status(200).json({
       success: true,
@@ -86,13 +73,10 @@ export const deleteFile = async (request, response, next) => {
   }
 };
 
-/**
- * Purpose: List all file metadata records in the system.
- * Input: Express request and response objects.
- */
 export const getFiles = async (request, response, next) => {
   try {
-    const files = await fileService.listFiles();
+    const userId = request.user.userId;
+    const files = await fileService.listFiles(userId);
     return response.status(200).json(files);
   } catch (error) {
     next(error);

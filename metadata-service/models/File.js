@@ -42,6 +42,12 @@ const FileSchema = new mongoose.Schema(
       type: Number,
       required: true
     },
+    ownerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true // Fast lookup for "Get My Files"
+    },
     createdAt: {
       type: Date,
       default: Date.now

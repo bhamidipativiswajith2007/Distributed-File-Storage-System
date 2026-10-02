@@ -39,5 +39,8 @@ export const config = {
 
   // The number of different storage nodes where each chunk copy will be saved.
   // We use parseInt because environment variables are loaded as strings.
-  REPLICATION_FACTOR: parseInt(process.env.REPLICATION_FACTOR, 10) || 2
+  REPLICATION_FACTOR: parseInt(process.env.REPLICATION_FACTOR, 10) || 2,
+
+  // Secret key used to sign and verify JSON Web Tokens (JWT) for user authentication
+  JWT_SECRET: process.env.JWT_SECRET || 'super_secret_replicora_key_for_dev'
 };

@@ -12,6 +12,7 @@ import express from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
 import { config } from './config/index.js';
+import authRoutes from './routes/authRoutes.js';
 import fileRoutes from './routes/fileRoutes.js';
 import { errorHandler } from './middlewares/errorHandler.js';
 
@@ -22,6 +23,9 @@ app.use(cors());
 
 // Parse JSON request payloads
 app.use(express.json());
+
+// Mount Authentication routes
+app.use('/auth', authRoutes);
 
 // Mount files routes at the root
 app.use('/', fileRoutes);

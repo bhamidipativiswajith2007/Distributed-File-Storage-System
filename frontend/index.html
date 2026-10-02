@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Replicora</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
 
@@ -12,9 +12,30 @@
     <header>
       <h1>Replicora</h1>
       <p>Distributed File Storage System</p>
+      <button id="logoutBtn" class="btn danger" style="display: none; margin-top: 10px;" type="button">Logout</button>
     </header>
 
-    <main>
+    <!-- Auth Section -->
+    <section id="authSection" class="card">
+      <div class="auth-tabs">
+        <button id="tabLogin" class="active" type="button">Login</button>
+        <button id="tabRegister" type="button">Register</button>
+      </div>
+      
+      <form id="authForm">
+        <div style="margin-bottom: 12px;">
+          <input type="text" id="username" placeholder="Username" required style="width: 100%; padding: 10px; border-radius: 4px; border: 1px solid var(--border-color);">
+        </div>
+        <div style="margin-bottom: 12px;">
+          <input type="password" id="password" placeholder="Password" required style="width: 100%; padding: 10px; border-radius: 4px; border: 1px solid var(--border-color);">
+        </div>
+        <button type="submit" id="authSubmitBtn" class="btn primary" style="width: 100%;">Login</button>
+      </form>
+      <p id="authStatus" class="status-msg"></p>
+    </section>
+
+    <!-- Main App Section (Hidden by default) -->
+    <main id="appSection" style="display: none;">
       <!-- Upload Section -->
       <section class="upload-section card">
         <h2>Upload a File</h2>
@@ -27,7 +48,7 @@
 
       <!-- Files List Section -->
       <section class="files-section card">
-        <h2>Uploaded Files</h2>
+        <h2>My Uploaded Files</h2>
         <table id="filesTable">
           <thead>
             <tr>
@@ -45,6 +66,6 @@
     </main>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>
