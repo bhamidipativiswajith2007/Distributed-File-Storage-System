@@ -12,15 +12,15 @@
 export const storageNodes = [
   {
     id: 'node-1',
-    url: 'http://localhost:5001'
+    url: process.env.NODE_1_URL || 'http://localhost:5001'
   },
   {
     id: 'node-2',
-    url: 'http://localhost:5002'
+    url: process.env.NODE_2_URL || 'http://localhost:5002'
   },
   {
     id: 'node-3',
-    url: 'http://localhost:5003'
+    url: process.env.NODE_3_URL || 'http://localhost:5003'
   }
 ];
 

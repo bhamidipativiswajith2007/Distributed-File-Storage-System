@@ -10,11 +10,15 @@
 
 import express from 'express';
 import mongoose from 'mongoose';
+import cors from 'cors';
 import { config } from './config/index.js';
 import fileRoutes from './routes/fileRoutes.js';
 import { errorHandler } from './middlewares/errorHandler.js';
 
 const app = express();
+
+// Enable CORS for frontend connectivity
+app.use(cors());
 
 // Parse JSON request payloads
 app.use(express.json());
