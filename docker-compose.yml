@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  # 1. MongoDB Database
+  mongodb:
+    image: mongo:latest
+    container_name: replicora-mongodb
+    ports:
+      - "27017:27017" # Expose to host so you can use Compass/Studio3T if you want
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - replicora-network
+
+  # 2. Metadata Service (The Coordinator)
+  metadata-service:
+    build: 
+      context: .
+      dockerfile: metadata-service/Dockerfile
+    container_name: replicora-metadata
+    ports:
+      - "5000:5000" # The Frontend needs to hit this port
+    environment:
+      # Use Docker's internal DNS to resolve the MongoDB container
+      - MONGO_URI=mongodb://mongodb:27017/distributed_storage
+      # Inject the dynamic URLs we set up in Step 1
+      - NODE_1_URL=http://storage-node-1:5001
+      - NODE_2_URL=http://storage-node-2:5002
+      - NODE_3_URL=http://storage-node-3:5003
+      - REPLICATION_FACTOR=2
+    depends_on:
+      - mongodb
+    networks:
+      - replicora-network
+
+  # 3. Storage Node 1
+  storage-node-1:
+    build: 
+      context: .
+      dockerfile: storage-node/Dockerfile
+    container_name: replicora-node-1
+    environment:
+      - PORT=5001
+    volumes:
+      - node1_data:/app/storage-node/data/chunks
+    networks:
+      - replicora-network
+
+  # 4. Storage Node 2
+  storage-node-2:
+    build: 
+      context: .
+      dockerfile: storage-node/Dockerfile
+    container_name: replicora-node-2
+    environment:
+      - PORT=5002
+    volumes:
+      - node2_data:/app/storage-node/data/chunks
+    networks:
+      - replicora-network
+
+  # 5. Storage Node 3
+  storage-node-3:
+    build: 
+      context: .
+      dockerfile: storage-node/Dockerfile
+    container_name: replicora-node-3
+    environment:
+      - PORT=5003
+    volumes:
+      - node3_data:/app/storage-node/data/chunks
+    networks:
+      - replicora-network
+
+  # 6. Frontend UI
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: replicora-frontend
+    ports:
+      - "8080:80" # Map host port 8080 to Nginx port 80
+    networks:
+      - replicora-network
+
+# Define persistent volumes so data survives container restarts
+volumes:
+  mongo_data:
+  node1_data:
+  node2_data:
+  node3_data:
+
+# Define a private internal network for the cluster
+networks:
+  replicora-network:
+    driver: bridge

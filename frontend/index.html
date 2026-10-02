@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Replicora</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <h1>Replicora</h1>
+      <p>Distributed File Storage System</p>
+    </header>
+
+    <main>
+      <!-- Upload Section -->
+      <section class="upload-section card">
+        <h2>Upload a File</h2>
+        <form id="uploadForm">
+          <input type="file" id="fileInput" required />
+          <button type="submit" id="uploadBtn" class="btn primary">Upload</button>
+        </form>
+        <p id="uploadStatus" class="status-msg"></p>
+      </section>
+
+      <!-- Files List Section -->
+      <section class="files-section card">
+        <h2>Uploaded Files</h2>
+        <table id="filesTable">
+          <thead>
+            <tr>
+              <th>File Name</th>
+              <th>Size</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="filesList">
+            <!-- File rows will be injected here via JavaScript -->
+          </tbody>
+        </table>
+        <p id="emptyState" class="empty-state">No files uploaded yet.</p>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
