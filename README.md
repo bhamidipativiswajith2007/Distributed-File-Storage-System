@@ -1,16 +1,21 @@
-# Distributed File Storage System
+# Replicora: Distributed File Storage System
 
-A robust, fault-tolerant, and high-performance **Distributed File Storage System** built on a microservices-style architecture using **Node.js (ES Modules)**, **Express**, and **MongoDB**. 
+A robust, fault-tolerant, and high-performance **Distributed File Storage System** built on a microservices architecture using **Node.js**, **Express**, **MongoDB**, and **Docker**. 
 
-This system partitions files into chunks, replicates them across a cluster of independent storage nodes using a Round-Robin placement strategy, verifies content integrity using SHA-256 hashes, and implements transactional rollbacks to guarantee cluster consistency during failures.
+Replicora acts as a secure, multi-tenant cloud drive. It partitions files into chunks, replicates them across a cluster of independent storage nodes using a Round-Robin placement strategy, verifies content integrity using SHA-256 hashes, and implements transactional rollbacks to guarantee cluster consistency during failures.
 
 ---
 
-## 🏗️ System Architecture & Monorepo Structure
+## ✨ Features (Phase 2)
+* **Multi-Tenancy & Security:** JWT-based Authentication (`bcrypt` + `jsonwebtoken`). Users only have access to their own files.
+* **Dockerized Cluster:** 6 interconnected containers spun up automatically via `docker-compose`.
+* **Zero-RAM Streaming:** Uses Node.js `pipeline()` to stream files directly to storage, maintaining $O(1)$ memory complexity regardless of file size.
+* **Fault Tolerance:** Configurable `REPLICATION_FACTOR` (default 2). Every chunk is backed up across multiple hard drives.
+* **Frontend UI:** A clean, responsive HTML/CSS/JS frontend to register, log in, and manage your cloud drive.
 
-The system is designed with a coordinator-worker architecture, dividing responsibilities between a metadata manager and stateless chunk servers.
+---
 
-### Architectural Diagram
+## 🏗️ System Architecture
 
 ```mermaid
 graph TD
@@ -19,26 +24,29 @@ graph TD
     classDef service fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
     classDef storage fill:#efebe9,stroke:#5d4037,stroke-width:2px;
     classDef database fill:#e8f5e9,stroke:#388e3c,stroke-width:2px;
-    classDef client fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
+    classDef ui fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
 
-    Client[Client / curl / Postman]:::client
+    Client[Frontend UI<br/>Port 8080]:::ui
     
-    subgraph "Metadata Coordinator (Master)"
+    subgraph "Metadata Coordinator (Port 5000)"
+        Auth[Auth Bouncer <br/> JWT Verification]:::service
         MS[Metadata Service]:::service
         Chunker[Chunker & Replicator Service]:::service
         Selector[Replica Selection Engine]:::service
     end
     
-    MongoDB[(MongoDB Metadata Store)]:::database
+    MongoDB[(MongoDB <br/> Port 27017)]:::database
     
-    subgraph "Storage Cluster (Chunk Servers)"
+    subgraph "Private Storage Cluster (Internal Docker Network)"
         Node1[(Storage Node 1<br/>Port 5001)]:::storage
         Node2[(Storage Node 2<br/>Port 5002)]:::storage
         Node3[(Storage Node 3<br/>Port 5003)]:::storage
     end
     
     %% Relationships
-    Client <-->|HTTP REST APIs| MS
+    Client <-->|POST /auth/login| Auth
+    Client <-->|HTTP + Bearer Token| MS
+    Auth <--> MongoDB
     MS <--> Chunker
     Chunker -->|Compute Placement| Selector
     Chunker <-->|Save/Load File & Chunk Metadata| MongoDB
@@ -47,205 +55,83 @@ graph TD
     Chunker -->|Distribute/Reassemble Replicas| Node3
 ```
 
-### High-Level Workflows
-
-#### 📤 Upload Flow
-1. **Request:** The Client uploads a file via `POST /files/upload`.
-2. **Chunking:** The **Metadata Service** splits the file stream into individual buffers based on `CHUNK_SIZE` (default 4MB).
-3. **Placement & Replication:** For each chunk, the **Replica Selection Engine** runs a Round-Robin placement algorithm to pick `REPLICATION_FACTOR` (default 2) storage nodes.
-4. **Physical Write:** The **Replicator Service** writes the chunks concurrently to the selected **Storage Nodes** using binary stream pipelines.
-5. **Metadata Registration:** Once all replicas are successfully saved, the service persists file metadata and chunk locations (including SHA-256 hashes) to **MongoDB**.
-6. **Transaction Safety:** If any chunk fails to write on a node, a rollback mechanism deletes all previously uploaded chunks of this file from the storage node cluster to prevent storage leakage.
-
-#### 📥 Download Flow
-1. **Request:** The Client initiates download via `GET /files/:fileId/download`.
-2. **Metadata Lookup:** The **Metadata Service** fetches file information and list of chunks sorted by index from **MongoDB**.
-3. **Stream Resolution:** For each chunk, it reads the replicas array, picks the first node, and initiates a network read stream.
-4. **Integrity Validation:** The downloaded chunk's SHA-256 is recalculated and verified against the metadata database.
-5. **Fail-Safe Socket Termination:** If a checksum fails, the connection socket is immediately terminated (`response.destroy()`) to prevent the client from saving a corrupted file.
-6. **Reassembly:** All validated chunks are streamed back sequentially to the client as a single file attachment.
-
 ---
 
-The project is managed as a monorepo using **NPM Workspaces** and contains three primary components:
-
+## 📂 Project Structure
 
 ```
-├── common/                  # Shared utilities and configurations
-│   └── constants.js         # Centralized system constants (e.g., chunk size, max file size)
-├── metadata-service/        # Metadata Service Express App
-│   ├── config/              # Ports, MongoDB URIs, and node configuration
-│   ├── controllers/         # REST API controller handlers
-│   ├── middlewares/         # Multer configuration, error handling
-│   ├── models/              # Mongoose Schemas (File, Chunk)
-│   ├── routes/              # Express API route routing
-│   ├── services/            # Chunker service, node service, selection logic
-│   └── server.js            # Main entry point
-└── storage-node/            # Physical Storage Node Express App
-    ├── config/              # Port-partitioned storage directory config
-    ├── controllers/         # Read/write chunk streams on local disk
-    ├── routes/              # Express chunk routing
-    └── server.js            # Main entry point
+├── docker-compose.yml       # Master orchestrator for the 6-node cluster
+├── frontend/                # Nginx web server & Vanilla JS UI
+│   ├── index.html           
+│   ├── style.css            
+│   └── app.js               
+├── common/                  # Shared utilities (Constants, hashers)
+├── metadata-service/        # The Coordinator Node (Port 5000)
+│   ├── controllers/         # File & Auth Controllers
+│   ├── middlewares/         # JWT Auth Bouncer & Multer
+│   ├── models/              # User, File, and Chunk MongoDB schemas
+│   └── services/            # Chunker and replication logic
+└── storage-node/            # The Worker Node Image (Reused 3x)
+    └── controllers/         # Binary stream disk writers
 ```
-
-### 1. Metadata Service
-Acts as the coordinator/master node. It receives client uploads, splits files into chunks (default: 4MB), determines placement nodes, and tracks metadata in MongoDB.
-- **Database (MongoDB):** Uses Mongoose schemas to store `File` metadata and individual `Chunk` metadata (including replicas' node IDs and SHA-256 hashes).
-- **Active Socket Termination:** If a chunk fails its integrity check during download, the socket connection is immediately destroyed to prevent the client from downloading corrupted data.
-- **Transactional Rollback:** If any replica upload fails during chunk distribution, all uploaded copies of the current chunk and previous chunks for that file are deleted from the storage nodes, keeping the storage cluster clean.
-
-### 2. Storage Nodes
-Stateless, lightweight storage endpoints responsible for physically writing and reading binary data on local disk.
-- **Port Partitioning:** Runs multiple instances from the same directory. The data folder is dynamically resolved as `storage-node/data/chunks/<PORT>` to keep node storage clean and isolated.
-- **Binary Streaming:** Interacts with files as binary streams using Node's `pipeline` to keep RAM usage minimal even under heavy payloads.
-
-### 3. Common
-Houses shared constants such as `DEFAULT_CHUNK_SIZE` and `DEFAULT_MAX_FILE_SIZE` to prevent configuration drift between components.
-
----
-
-## ⚡ Core Distributed Concepts
-
-*   **File Chunking:** Large files are split into smaller segments (default: 4MB). Smaller chunks make transfer over network requests efficient and manageable.
-*   **Round-Robin Replica Placement:** For every chunk, a set of distinct storage nodes is cyclically chosen using the formula:
-    $$\text{Target Node Index} = (\text{chunkIndex} + \text{replicaOffset}) \bmod N$$
-    *(where $N$ is the total storage nodes and $\text{replicaOffset} \in [0, \text{Replication Factor} - 1]$)*
-*   **SHA-256 Data Integrity:** A SHA-256 hash is computed for each chunk on upload and validated on download.
-*   **Fault Tolerance:** Files can survive node failures since every chunk is replicated on multiple storage nodes (defined by `REPLICATION_FACTOR`).
 
 ---
 
 ## 🚀 Getting Started
 
+Thanks to Docker Compose, you no longer need to manually open 5 different terminal windows to boot the cluster. 
+
 ### Prerequisites
-- **Node.js** (v18+ recommended)
-- **MongoDB** (Running locally on default port `27017` or configured via env)
+- **Docker** and **Docker Compose** installed on your system.
 
-### Installation
-Clone the repository and run the installation script in the root directory to install dependencies for all workspaces:
+### 1. Boot the Cluster
+Open a terminal in the root folder and run:
 ```bash
-npm install
+docker-compose up -d --build
+```
+This single command will:
+1. Download MongoDB.
+2. Build the Storage Node image and spin it up 3 times (Node 1, Node 2, Node 3).
+3. Build and launch the Metadata Service (Port 5000).
+4. Build and launch the Nginx Frontend (Port 8080).
+5. Map Docker Volumes so your files and databases survive computer restarts.
+
+### 2. Access the App
+Open your web browser and navigate to:
+**[http://localhost:8080](http://localhost:8080)**
+
+1. Click the **Register** tab to create an account.
+2. Log in. 
+3. Start uploading files! (Your files are now cryptographically locked to your account ID).
+
+### 3. Stop the Cluster
+To gracefully shut down the cluster without losing your saved files:
+```bash
+docker-compose down
 ```
 
 ---
 
-## ⚙️ Configuration (.env)
+## 🔐 API Reference (Authenticated)
 
-Both services run on their own configuration. Copy the example environments and adjust configurations as needed.
+All `/files` endpoints are locked down. You must pass the JWT token in the headers:
+`Authorization: Bearer <your_jwt_token>`
 
-#### 1. Metadata Service Configuration
-Create a `.env` file in the `metadata-service/` folder:
-```ini
-PORT=5000
-MONGO_URI=mongodb://localhost:27017/distributed_storage
-REPLICATION_FACTOR=2
-CHUNK_SIZE=4194304
-MAX_FILE_SIZE=524288000
-```
+### Auth (Public)
+| Endpoint | Method | Payload |
+| :--- | :--- | :--- |
+| `/auth/register` | `POST` | `{"username": "...", "password": "..."}` |
+| `/auth/login` | `POST` | `{"username": "...", "password": "..."}` |
 
-#### 2. Storage Node Configuration
-Create a `.env` file in the `storage-node/` folder:
-```ini
-PORT=5001
-```
-
----
-
-## 🏃 Running the System
-
-To run a fully replication-aware cluster, you should launch the **Metadata Service** and **multiple instances of the Storage Node** on the ports defined in `metadata-service/config/storageNodes.js` (Ports `5001`, `5002`, and `5003`).
-
-### 1. Start MongoDB
-Ensure MongoDB is running locally:
-```bash
-mongod
-```
-
-### 2. Start the Metadata Service
-```bash
-npm run dev:metadata
-```
-*Runs on port `5000` by default.*
-
-### 3. Start Storage Nodes
-Open three terminal instances and start the storage nodes on different ports.
-
-*   **Storage Node 1 (Port 5001):**
-    ```bash
-    # Windows PowerShell
-    $env:PORT=5001; npm run dev:storage
-
-    # Linux / macOS
-    PORT=5001 npm run dev:storage
-    ```
-
-*   **Storage Node 2 (Port 5002):**
-    ```bash
-    # Windows PowerShell
-    $env:PORT=5002; npm run dev:storage
-
-    # Linux / macOS
-    PORT=5002 npm run dev:storage
-    ```
-
-*   **Storage Node 3 (Port 5003):**
-    ```bash
-    # Windows PowerShell
-    $env:PORT=5003; npm run dev:storage
-
-    # Linux / macOS
-    PORT=5003 npm run dev:storage
-    ```
-
----
-
-## 📡 API Reference
-
-### Metadata Service (Port 5000)
-
-| Endpoint | Method | Description | Payload / Query |
-| :--- | :--- | :--- | :--- |
-| `/files/upload` | `POST` | Upload file (multipart/form-data) | Form field name: `file` |
-| `/files` | `GET` | List all files in the system | *None* |
-| `/files/:fileId/download` | `GET` | Reassemble, verify, and download file | Route Param: `fileId` |
-| `/files/:fileId` | `DELETE` | Delete file chunks on nodes & records from DB | Route Param: `fileId` |
-
-### Storage Nodes (Ports 5001, 5002, 5003)
-
+### Files (Requires JWT)
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/health` | `GET` | Check if node is online |
-| `/chunks/:chunkId` | `PUT` | Write binary chunk stream to disk |
-| `/chunks/:chunkId` | `GET` | Stream chunk binary data from disk |
-| `/chunks/:chunkId` | `DELETE` | Delete chunk binary file from disk |
+| `/files/upload` | `POST` | Upload file (`multipart/form-data`). Attaches `ownerId`. |
+| `/files` | `GET` | List all files owned by the currently logged-in user. |
+| `/files/:fileId/download` | `GET` | Reassemble, verify SHA-256, and stream file. |
+| `/files/:fileId` | `DELETE` | Delete file chunks on nodes & records from DB. |
 
 ---
 
-## 🧪 Testing with curl
-
-### 1. Upload a File
-```bash
-curl -X POST -F "file=@/path/to/your/file.txt" http://localhost:5000/files/upload
-```
-*Response:*
-```json
-{
-  "success": true,
-  "fileId": "d3b07384-d113-4ec2-a5d7-c93d20d880ab"
-}
-```
-
-### 2. List Files
-```bash
-curl http://localhost:5000/files
-```
-
-### 3. Download a File
-```bash
-curl -o downloaded_file.txt http://localhost:5000/files/d3b07384-d113-4ec2-a5d7-c93d20d880ab/download
-```
-
-### 4. Delete a File
-```bash
-curl -X DELETE http://localhost:5000/files/d3b07384-d113-4ec2-a5d7-c93d20d880ab
-```
+## 🛡️ Security & Internal Networking
+The Storage Nodes (Ports 5001, 5002, 5003) are **NOT** exposed to your host machine or the public internet. They exist entirely on a private Docker bridge network. Only the Metadata Service can talk to them. This ensures that a malicious actor cannot bypass the JWT Auth Bouncer and interact with the physical chunk disks directly. 
