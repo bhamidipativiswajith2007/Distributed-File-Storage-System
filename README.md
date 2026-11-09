@@ -135,3 +135,6 @@ All `/files` endpoints are locked down. You must pass the JWT token in the heade
 
 ## 🛡️ Security & Internal Networking
 The Storage Nodes (Ports 5001, 5002, 5003) are **NOT** exposed to your host machine or the public internet. They exist entirely on a private Docker bridge network. Only the Metadata Service can talk to them. This ensures that a malicious actor cannot bypass the JWT Auth Bouncer and interact with the physical chunk disks directly. 
+
+## 🛡️Patent
+By Viswajith Bhamidipati.
