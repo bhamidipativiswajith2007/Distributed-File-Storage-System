@@ -269,10 +269,5 @@ curl -X DELETE http://localhost:5000/cluster/nodes/node-4
 
 ---
 
-## 🛡️ Security & Network Isolation
-
-The Storage Nodes (`node-1`, `node-2`, `node-3`) are **not exposed** to the host network or public internet. They communicate strictly over the internal Docker network (`replicora-network`). 
-
-* **Defense in Depth:** Direct client requests cannot reach raw storage drives or bypass the coordinator.
-* **Authentication Gate:** Only requests verified by the JWT Auth Guard on the Metadata Service can trigger chunk reads, writes, or deletions.
-* **Cryptographic Integrity:** Every downloaded chunk is verified against its stored SHA-256 checksum to protect against bit rot and disk corruption.
+## 🛡️ Security & Internal Networking
+The Storage Nodes (Ports 5001, 5002, 5003) are **NOT** exposed to your host machine or the public internet. They exist entirely on a private Docker bridge network. Only the Metadata Service can talk to them. This ensures that a malicious actor cannot bypass the JWT Auth Bouncer and interact with the physical chunk disks directly. 
