@@ -1,11 +1,11 @@
 /**
  * @file metadata-service/services/chunkerService.js
- * @description Service responsible for splitting temporary files and distributing chunk replicas.
+ * @description Service responsible for splitting temporary files and distributing chunk replicas via Consistent Hashing.
  * 
  * Concepts Used:
- * - Chunk Replication Flow: For every chunk, we fetch a list of target storage nodes from `replicaSelectionService`.
- *   We upload the chunk buffer to each replica node sequentially.
- * - Transactional Rollback (Replication-Aware): If an upload to *any* replica node fails, we must:
+ * - Consistent Hashing Replica Flow: For every chunk, a unique chunkId (UUID) is generated. The chunkId is hashed
+ *   onto the Consistent Hashing Ring to deterministically select the primary and secondary replica storage nodes.
+ * - Transactional Rollback (Replication-Aware): If an upload to *any* replica node fails, we:
  *   1. Clean up (delete) any successful copies of the CURRENT chunk we already uploaded.
  *   2. Propagate the error to the main catch block, which unlinks all previous successfully uploaded chunks
  *      from all of their respective replica storage nodes.
@@ -22,24 +22,13 @@ import { config } from '../config/index.js';
 
 export const chunkerService = {
   /**
-   * Purpose: Split a file, select placement replica nodes cyclically, upload to all replicas, and roll back on failure.
+   * Purpose: Split a file, select placement replica nodes via Consistent Hashing, upload to all replicas, and roll back on failure.
    * Input:
    *   - filePath: Absolute path to the temporary file on disk.
    * Output: Object containing:
    *   - fileSize: Total file size in bytes.
    *   - totalChunks: Total number of chunks uploaded.
    *   - chunks: Array of metadata objects ({ chunkId, chunkIndex, checksum, replicas: [nodeIds] }).
-   * High-Level Workflow:
-   *   1. Determine size. Open file descriptor.
-   *   2. Loop through file. Read segment into buffer.
-   *   3. Call replicaSelectionService.getReplicasForChunk(chunkIndex) to get target nodes.
-   *   4. Generate UUID and checksum.
-   *   5. For each target node:
-   *      - Upload chunk to node URL.
-   *      - Track successful uploads for this chunk.
-   *      - If any upload fails, immediately delete the copies of this chunk on other replica nodes, and throw error.
-   *   6. Add chunk metadata with replicas list to the tracker.
-   *   7. If parent catch executes, clean up all uploaded chunks from all their replica nodes.
    */
   splitAndUpload: async (filePath) => {
     const fileStats = await fs.promises.stat(filePath);
@@ -68,12 +57,12 @@ export const chunkerService = {
 
         const finalChunkBuffer = bytesRead === currentChunkSize ? chunkBuffer : chunkBuffer.subarray(0, bytesRead);
 
-        // 1. Get list of target replica nodes using Round Robin replica selection
-        const targetNodes = replicaSelectionService.getReplicasForChunk(chunkIndex);
-        
-        // 2. Generate UUID and compute SHA-256 hash
+        // 1. Generate UUID and compute SHA-256 hash first
         const chunkId = uuidv4();
         const checksum = calculateChecksum(finalChunkBuffer);
+
+        // 2. Select target replica nodes using the Consistent Hashing Ring
+        const targetNodes = replicaSelectionService.getReplicasForChunk(chunkId);
 
         const successfulReplicasForThisChunk = [];
 

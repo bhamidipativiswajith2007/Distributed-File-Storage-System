@@ -14,6 +14,7 @@ import cors from 'cors';
 import { config } from './config/index.js';
 import authRoutes from './routes/authRoutes.js';
 import fileRoutes from './routes/fileRoutes.js';
+import clusterRoutes from './routes/clusterRoutes.js';
 import { errorHandler } from './middlewares/errorHandler.js';
 
 const app = express();
@@ -27,6 +28,9 @@ app.use(express.json());
 // Mount Authentication routes
 app.use('/auth', authRoutes);
 
+// Mount Cluster & Consistent Hash Ring diagnostics routes
+app.use('/cluster', clusterRoutes);
+
 // Mount files routes at the root
 app.use('/', fileRoutes);
 
@@ -36,10 +40,6 @@ app.use(errorHandler);
 /**
  * Purpose: Establish connection to MongoDB and start Express server listener.
  * Output: Logs status messages to the console or exits process on failure.
- * High-Level Workflow:
- *   1. Connect to MongoDB using the configured URI string.
- *   2. If successful, log connection message and start listening for HTTP requests.
- *   3. If connection fails, log the error and terminate the process.
  */
 const initializeDatabaseAndStartServer = async () => {
   try {
